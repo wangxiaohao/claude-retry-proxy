@@ -10,11 +10,12 @@ const DEFAULTS = {
     targetPort:    443,
     targetProtocol:'https',
     upstreamProxy: '',      // 形如 http://127.0.0.1:7890，空表示直连
-    maxRetries:    5,
+    maxRetries:    10,
     baseDelayMs:   600,
     maxDelayMs:    8000,
     jitter:        true,
     retryStatuses: [403, 408, 429, 500, 502, 503, 504],
+    statusDelays:  { 403: 1500 },   // 状态码→固定重试间隔(ms)，命中即不走指数退避
     retryNetworkErrors: true,
     verbose:       false,
 };
@@ -27,6 +28,22 @@ function parseStatusList(value, fallback) {
         .map(s => parseInt(s.trim(), 10))
         .filter(n => Number.isInteger(n) && n >= 100 && n <= 599);
     return list.length ? list : fallback;
+}
+
+// 把 "403:1500,429:2000" 解析为 { 403: 1500, 429: 2000 }。
+// 丢弃非法状态码（须 100–599）与非法延时（须 >=0 的整数）；空/全非法时回退 fallback。
+function parseStatusDelays(value, fallback) {
+    if (value == null || value === '') return fallback;
+    const map = {};
+    for (const pair of String(value).split(',')) {
+        const [k, v] = pair.split(':');
+        const code = parseInt((k || '').trim(), 10);
+        const ms = parseInt((v || '').trim(), 10);
+        if (Number.isInteger(code) && code >= 100 && code <= 599 && Number.isInteger(ms) && ms >= 0) {
+            map[code] = ms;
+        }
+    }
+    return Object.keys(map).length ? map : fallback;
 }
 
 function parseBool(value, fallback) {
@@ -63,6 +80,7 @@ function buildConfig(argv = [], env = {}) {
         maxDelayMs:    parseIntOr(flags['max-delay'] ?? env.RETRY_MAX_DELAY_MS, DEFAULTS.maxDelayMs),
         jitter:        parseBool(flags.jitter ?? env.RETRY_JITTER, DEFAULTS.jitter),
         retryStatuses: parseStatusList(flags['retry-statuses'] ?? env.RETRY_STATUSES, DEFAULTS.retryStatuses),
+        statusDelays:  parseStatusDelays(flags['status-delays'] ?? env.RETRY_STATUS_DELAYS, DEFAULTS.statusDelays),
         retryNetworkErrors: parseBool(flags['retry-network-errors'] ?? env.RETRY_NETWORK_ERRORS, DEFAULTS.retryNetworkErrors),
         verbose:       parseBool(flags.verbose ?? env.RETRY_VERBOSE, DEFAULTS.verbose),
         help:          Boolean(flags.help || flags.h),
@@ -107,4 +125,4 @@ function parseFlags(argv) {
     return flags;
 }
 
-module.exports = { buildConfig, parseStatusList, parseBool, parseIntOr, DEFAULTS };
+module.exports = { buildConfig, parseStatusList, parseStatusDelays, parseBool, parseIntOr, DEFAULTS };

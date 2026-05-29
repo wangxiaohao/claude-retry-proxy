@@ -2,16 +2,17 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildConfig, parseStatusList, parseBool, DEFAULTS } = require('../src/config');
+const { buildConfig, parseStatusList, parseStatusDelays, parseBool, DEFAULTS } = require('../src/config');
 
 test('默认值：无参数无环境变量', () => {
     const cfg = buildConfig([], {});
     assert.strictEqual(cfg.port, 7893);
     assert.strictEqual(cfg.targetHost, 'api.anthropic.com');
     assert.strictEqual(cfg.targetPort, 443);
-    assert.strictEqual(cfg.maxRetries, 5);
+    assert.strictEqual(cfg.maxRetries, 10);
     assert.strictEqual(cfg.upstreamProxy, '');
     assert.deepStrictEqual(cfg.retryStatuses, DEFAULTS.retryStatuses);
+    assert.deepStrictEqual(cfg.statusDelays, { 403: 1500 });
 });
 
 test('位置参数：[port] [proxy]（兼容旧脚本用法）', () => {
@@ -66,6 +67,26 @@ test('retry-statuses 解析为数字数组，过滤非法值', () => {
 test('parseStatusList 非法输入回退默认', () => {
     assert.deepStrictEqual(parseStatusList('', [403]), [403]);
     assert.deepStrictEqual(parseStatusList('abc,xyz', [1]), [1]);
+});
+
+test('status-delays 从 flag 解析为 状态码→ms 映射', () => {
+    const cfg = buildConfig(['--status-delays', '403:1500, 429:2000'], {});
+    assert.deepStrictEqual(cfg.statusDelays, { 403: 1500, 429: 2000 });
+});
+
+test('status-delays 从 RETRY_STATUS_DELAYS 环境变量解析', () => {
+    const cfg = buildConfig([], { RETRY_STATUS_DELAYS: '403:800' });
+    assert.deepStrictEqual(cfg.statusDelays, { 403: 800 });
+});
+
+test('parseStatusDelays 过滤非法项，全非法/空则回退默认', () => {
+    // 非法状态码、非法/负数延时被丢弃，合法项保留
+    assert.deepStrictEqual(
+        parseStatusDelays('403:1500, 700:1000, 429:abc, 503:-5, 500:0', { 403: 1500 }),
+        { 403: 1500, 500: 0 }
+    );
+    assert.deepStrictEqual(parseStatusDelays('', { 403: 1500 }), { 403: 1500 });
+    assert.deepStrictEqual(parseStatusDelays('garbage', { 403: 1500 }), { 403: 1500 });
 });
 
 test('parseBool 覆盖各种真假表示', () => {

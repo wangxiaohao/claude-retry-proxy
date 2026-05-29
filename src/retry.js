@@ -2,7 +2,13 @@
 // retry.js — 纯重试逻辑，与网络/HTTP 解耦，便于单元测试。
 
 // 指数退避 + 上限 + 可选抖动。attempt 从 1 开始计（第几次重试）。
-function computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, random = Math.random }) {
+//   statusDelays  状态码→固定间隔(ms) 映射；statusCode 命中时返回固定值（不退避/不抖动/不封顶）。
+//   statusCode    触发本次重试的状态码（网络错误时为空，则走指数退避）。
+function computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, statusDelays, statusCode, random = Math.random }) {
+    // 针对特定状态码的固定重试间隔（如 403 瞬时权限错误，用稳定短间隔而非越退越久）。
+    if (statusDelays && statusCode != null && statusDelays[statusCode] != null) {
+        return statusDelays[statusCode];
+    }
     const exp = baseDelayMs * Math.pow(2, attempt - 1);
     const capped = Math.min(exp, maxDelayMs);
     if (!jitter) return capped;
@@ -18,6 +24,7 @@ function computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, random = Math.
 //   retryStatuses       命中则重试的状态码数组。
 //   retryNetworkErrors  doAttempt 抛错时是否重试。
 //   baseDelayMs/maxDelayMs/jitter  退避参数。
+//   statusDelays        状态码→固定间隔(ms)；命中的状态码用固定值，不走退避（如 {403:1500}）。
 //   sleep(ms)           延时函数（测试可注入）。
 //   discard(result)     重试前丢弃上一次响应体（可选，返回 Promise）。
 //   onRetry(info)       每次重试前回调：{ attempt, delay, maxRetries, statusCode, error }。
@@ -26,12 +33,13 @@ function computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, random = Math.
 // 若全部尝试都抛错，则抛出最后一次错误。
 async function requestWithRetry(doAttempt, opts) {
     const {
-        maxRetries = 5,
+        maxRetries = 10,
         retryStatuses = [403],
         retryNetworkErrors = true,
         baseDelayMs = 600,
         maxDelayMs = 8000,
         jitter = true,
+        statusDelays = {},     // 状态码→固定间隔(ms)；空则全部走指数退避（纯函数默认中立）
         random,
         sleep = defaultSleep,
         discard,
@@ -43,7 +51,7 @@ async function requestWithRetry(doAttempt, opts) {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (attempt > 0) {
-            const delay = computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, random });
+            const delay = computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, statusDelays, statusCode: lastStatus, random });
             if (onRetry) {
                 onRetry({
                     attempt,
