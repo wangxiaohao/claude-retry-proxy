@@ -1,0 +1,27 @@
+{
+  "name": "claude-retry-proxy",
+  "version": "1.0.0",
+  "description": "本地反向代理：拦截 Anthropic / Claude Code 请求，遇到 403（或其他可重试状态）自动重试，可串联全局代理。",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "bin": {
+    "claude-retry-proxy": "bin/claude-retry-proxy.js"
+  },
+  "scripts": {
+    "start": "node bin/claude-retry-proxy.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check bin/claude-retry-proxy.js && node --check src/*.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "anthropic",
+    "proxy",
+    "retry",
+    "403"
+  ],
+  "license": "MIT",
+  "dependencies": {}
+}

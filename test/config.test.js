@@ -1,0 +1,75 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert');
+const { buildConfig, parseStatusList, parseBool, DEFAULTS } = require('../src/config');
+
+test('默认值：无参数无环境变量', () => {
+    const cfg = buildConfig([], {});
+    assert.strictEqual(cfg.port, 7893);
+    assert.strictEqual(cfg.targetHost, 'api.anthropic.com');
+    assert.strictEqual(cfg.targetPort, 443);
+    assert.strictEqual(cfg.maxRetries, 5);
+    assert.strictEqual(cfg.upstreamProxy, '');
+    assert.deepStrictEqual(cfg.retryStatuses, DEFAULTS.retryStatuses);
+});
+
+test('位置参数：[port] [proxy]（兼容旧脚本用法）', () => {
+    const cfg = buildConfig(['7899', 'http://127.0.0.1:7890'], {});
+    assert.strictEqual(cfg.port, 7899);
+    assert.strictEqual(cfg.upstreamProxy, 'http://127.0.0.1:7890');
+});
+
+test('--key value 与 --key=value 两种形式', () => {
+    const a = buildConfig(['--port', '8000', '--max-retries', '9'], {});
+    assert.strictEqual(a.port, 8000);
+    assert.strictEqual(a.maxRetries, 9);
+
+    const b = buildConfig(['--port=8001', '--base-delay=250'], {});
+    assert.strictEqual(b.port, 8001);
+    assert.strictEqual(b.baseDelayMs, 250);
+});
+
+test('布尔标志：--verbose / -h', () => {
+    const cfg = buildConfig(['--verbose'], {});
+    assert.strictEqual(cfg.verbose, true);
+    const h = buildConfig(['-h'], {});
+    assert.strictEqual(h.help, true);
+});
+
+test('CLI 优先级高于环境变量', () => {
+    const cfg = buildConfig(['--port', '9000'], { RETRY_PROXY_PORT: '1234' });
+    assert.strictEqual(cfg.port, 9000);
+});
+
+test('环境变量在无 CLI 时生效', () => {
+    const cfg = buildConfig([], { RETRY_PROXY_PORT: '1234', RETRY_MAX: '2' });
+    assert.strictEqual(cfg.port, 1234);
+    assert.strictEqual(cfg.maxRetries, 2);
+});
+
+test('HTTPS_PROXY / ALL_PROXY 作为出站代理回退', () => {
+    const a = buildConfig([], { HTTPS_PROXY: 'http://127.0.0.1:7890' });
+    assert.strictEqual(a.upstreamProxy, 'http://127.0.0.1:7890');
+    const b = buildConfig([], { ALL_PROXY: 'socks5://127.0.0.1:7891' });
+    assert.strictEqual(b.upstreamProxy, 'socks5://127.0.0.1:7891');
+    // 显式 --proxy 覆盖环境变量
+    const c = buildConfig(['--proxy', 'http://1.2.3.4:8080'], { HTTPS_PROXY: 'http://127.0.0.1:7890' });
+    assert.strictEqual(c.upstreamProxy, 'http://1.2.3.4:8080');
+});
+
+test('retry-statuses 解析为数字数组，过滤非法值', () => {
+    const cfg = buildConfig(['--retry-statuses', '403, 429 ,abc, 700, 503'], {});
+    assert.deepStrictEqual(cfg.retryStatuses, [403, 429, 503]);
+});
+
+test('parseStatusList 非法输入回退默认', () => {
+    assert.deepStrictEqual(parseStatusList('', [403]), [403]);
+    assert.deepStrictEqual(parseStatusList('abc,xyz', [1]), [1]);
+});
+
+test('parseBool 覆盖各种真假表示', () => {
+    for (const v of ['1', 'true', 'YES', 'on']) assert.strictEqual(parseBool(v, false), true);
+    for (const v of ['0', 'false', 'NO', 'off']) assert.strictEqual(parseBool(v, true), false);
+    assert.strictEqual(parseBool('garbage', true), true); // 回退
+});
