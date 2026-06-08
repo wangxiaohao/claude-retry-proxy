@@ -12,7 +12,7 @@ test('默认值：无参数无环境变量', () => {
     assert.strictEqual(cfg.maxRetries, 10);
     assert.strictEqual(cfg.upstreamProxy, '');
     assert.deepStrictEqual(cfg.retryStatuses, DEFAULTS.retryStatuses);
-    assert.deepStrictEqual(cfg.statusDelays, { 403: 1500 });
+    assert.deepStrictEqual(cfg.statusDelays, { 403: 800 });
 });
 
 test('位置参数：[port] [proxy]（兼容旧脚本用法）', () => {

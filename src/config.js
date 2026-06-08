@@ -15,7 +15,7 @@ const DEFAULTS = {
     maxDelayMs:    8000,
     jitter:        true,
     retryStatuses: [403, 408, 429, 500, 502, 503, 504],
-    statusDelays:  { 403: 1500 },   // 状态码→固定重试间隔(ms)，命中即不走指数退避
+    statusDelays:  { 403: 800 },    // 状态码→固定重试间隔(ms)，命中即不走指数退避
     retryNetworkErrors: true,
     verbose:       false,
 };

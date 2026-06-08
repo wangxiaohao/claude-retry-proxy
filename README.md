@@ -183,13 +183,13 @@ CLI 标志、环境变量、默认值，优先级 **CLI > 环境变量 > 默认�
 | `--max-delay` | `RETRY_MAX_DELAY_MS` | `8000` | 退避上限（ms） |
 | `--jitter` | `RETRY_JITTER` | `true` | 是否加抖动 |
 | `--retry-statuses` | `RETRY_STATUSES` | `403,408,429,500,502,503,504` | 命中即重试的状态码 |
-| `--status-delays` | `RETRY_STATUS_DELAYS` | `403:1500` | 特定状态码的固定重试间隔(ms)，如 `403:1500,429:2000`；命中即不走退避 |
+| `--status-delays` | `RETRY_STATUS_DELAYS` | `403:800` | 特定状态码的固定重试间隔(ms)，如 `403:800,429:2000`；命中即不走退避 |
 | `--retry-network-errors` | `RETRY_NETWORK_ERRORS` | `true` | 网络错误是否重试 |
 | `--verbose` | `RETRY_VERBOSE` | `false` | 打印每个请求 |
 
 退避策略：第 n 次重试延时 = `min(baseDelay × 2^(n-1), maxDelay)`，开启抖动时在 `[delay/2, delay]` 内取值。
 
-例外——固定间隔：在 `--status-delays` 中列出的状态码使用**固定间隔**重试（不指数退避、不抖动、不受 `maxDelay` 封顶）。默认 `403:1500`，即 403（多为瞬时权限错误，手动「继续」即恢复）每次重试稳定等 1.5s；429/5xx 及网络错误仍走上面的指数退避。
+例外——固定间隔：在 `--status-delays` 中列出的状态码使用**固定间隔**重试（不指数退避、不抖动、不受 `maxDelay` 封顶）。默认 `403:800`，即 403（多为瞬时权限错误，手动「继续」即恢复）每次重试稳定等 0.8s；429/5xx 及网络错误仍走上面的指数退避。
 
 ## 测试
 
