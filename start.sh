@@ -14,12 +14,34 @@ is_running() {
     [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
 }
 
+# 按端口查找正在 LISTEN 的进程并关闭（不依赖 PID 文件，兜底清理残留/失管进程）。
+# 先 TERM，等待至多 ~2s，仍占用则 KILL 强杀。
+free_port() {
+    command -v lsof >/dev/null 2>&1 || return 0
+    local pids
+    pids="$(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null || true)"
+    [[ -z "$pids" ]] && return 0
+    echo "端口 $PORT 被占用 (PID: $(echo "$pids" | tr '\n' ' ' | sed 's/ $//'))，正在关闭…"
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null || true
+    for _ in $(seq 1 10); do
+        sleep 0.2
+        lsof -ti "tcp:$PORT" -sTCP:LISTEN >/dev/null 2>&1 || return 0
+    done
+    pids="$(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null || true)"
+    if [[ -n "$pids" ]]; then
+        echo "未能优雅关闭，强制结束 (PID: $(echo "$pids" | tr '\n' ' ' | sed 's/ $//'))"
+        # shellcheck disable=SC2086
+        kill -9 $pids 2>/dev/null || true
+        sleep 0.3
+    fi
+}
+
 case "$cmd" in
     start)
-        if is_running; then
-            echo "已在运行 (PID $(cat "$PID_FILE"))，端口 $PORT"
-            exit 0
-        fi
+        # 启动前先按端口关闭任何占用进程，确保端口空闲后再启动。
+        free_port
+        rm -f "$PID_FILE"
         nohup node "$DIR/bin/claude-retry-proxy.js" --port "$PORT" --proxy "$PROXY" \
             >"$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
@@ -29,12 +51,12 @@ case "$cmd" in
         ;;
     stop)
         if is_running; then
-            kill "$(cat "$PID_FILE")" && rm -f "$PID_FILE"
-            echo "已停止"
-        else
-            echo "未在运行"
-            rm -f "$PID_FILE"
+            kill "$(cat "$PID_FILE")" 2>/dev/null || true
+            echo "已停止 (PID $(cat "$PID_FILE"))"
         fi
+        rm -f "$PID_FILE"
+        # 兜底：按端口清理 PID 文件之外的残留进程。
+        free_port
         ;;
     restart)
         "$0" stop || true
