@@ -4,7 +4,7 @@
 const http = require('http');
 const zlib = require('zlib');
 const { requestWithRetry } = require('./retry');
-const { createRequester, createAgent, drainResponse } = require('./upstream');
+const { createRequester, createAgent } = require('./upstream');
 
 function ts() {
     return new Date().toISOString().slice(11, 23);
@@ -38,17 +38,72 @@ function createServer(config, deps = {}) {
     const requester = deps.requester || createRequester(config, agent);
     const sleep = deps.sleep; // 测试可注入；否则用 retry 默认
 
+    // 每个客户端请求一个短 id，便于在并发交错的日志里关联同一请求的多次尝试。
+    let reqSeq = 0;
+    // 诊断头白名单：用于区分 Cloudflare 拦截 / API 鉴权 / 限流 / 上游来源。
+    const DIAG_HEADERS = [
+        'server', 'cf-ray', 'cf-mitigated', 'x-should-retry', 'retry-after',
+        'anthropic-ratelimit-unified-status', 'request-id', 'x-request-id',
+        'www-authenticate',
+    ];
+
     const server = http.createServer(async (cReq, cRes) => {
+        const reqId = `r${(++reqSeq).toString(36)}`;
+        const startedAt = Date.now();
+        const label = `[${reqId}] ${cReq.method} ${cReq.url}`;
+
         let body;
         try {
             body = await readBody(cReq);
         } catch (err) {
-            log.warn(`读取客户端请求体失败: ${err.message}`);
+            log.warn(`${label} 读取客户端请求体失败: ${err.message}`);
             if (!cRes.headersSent) cRes.writeHead(400).end('读取请求体失败');
             return;
         }
+        log.debug(`${label} 收到请求（body ${body.length}B）`);
 
-        const doAttempt = () => requester(cReq.method, cReq.url, cReq.headers, body);
+        // 包装单次尝试，记录每次的状态码 / 网络错误与耗时（debug 级，verbose 可见）。
+        let attemptNo = 0;
+        const doAttempt = async () => {
+            const n = ++attemptNo;
+            const t0 = Date.now();
+            try {
+                const res = await requester(cReq.method, cReq.url, cReq.headers, body);
+                log.debug(`${label} 尝试#${n} → ${res.statusCode}（${Date.now() - t0}ms）`);
+                return res;
+            } catch (err) {
+                log.debug(`${label} 尝试#${n} 网络错误：${err.message}（${Date.now() - t0}ms）`);
+                throw err;
+            }
+        };
+
+        // 重试前丢弃上一次（将被重试的）错误响应体，并顺带记录诊断头与响应体摘要。
+        // discard 只接收会被重试的错误响应（403/5xx 等），不含成功用户数据，记录是安全的，
+        // 也是判断 403 究竟来自 Cloudflare 拦截、API 鉴权还是限流的关键依据。
+        // 默认即记录头与 200 字符摘要；verbose 时摘要放宽到 800 字符。
+        const discardAndDiagnose = (res) => {
+            const h = res.headers || {};
+            const diag = DIAG_HEADERS.filter(k => h[k] != null).map(k => `${k}=${h[k]}`).join(' ');
+            if (diag) log.warn(`${label} 上游 ${res.statusCode} 头：${diag}`);
+            return new Promise(resolve => {
+                const chunks = [];
+                res.on('data', c => chunks.push(c));
+                res.once('end', () => {
+                    let buf = Buffer.concat(chunks);
+                    try {
+                        const enc = (h['content-encoding'] || '').toLowerCase();
+                        if (enc === 'gzip' || enc === 'x-gzip') buf = zlib.gunzipSync(buf);
+                        else if (enc === 'br') buf = zlib.brotliDecompressSync(buf);
+                        else if (enc === 'deflate') buf = zlib.inflateSync(buf);
+                    } catch (_) { /* 解压失败就按原样打印 */ }
+                    const limit = config.verbose ? 800 : 200;
+                    const snippet = buf.toString('utf8').slice(0, limit).replace(/\s+/g, ' ').trim();
+                    if (snippet) log.warn(`${label} 上游 ${res.statusCode} 响应体：${snippet}`);
+                    resolve();
+                });
+                res.once('error', () => resolve());
+            });
+        };
 
         let outcome;
         try {
@@ -61,36 +116,14 @@ function createServer(config, deps = {}) {
                 jitter:             config.jitter,
                 statusDelays:       config.statusDelays,
                 sleep,
-                // 默认仅排空响应体；verbose 时把被重试的(可重试状态码)响应体打出来，
-                // 用于诊断 403 到底是鉴权/权限/区域还是限流。discard 只会收到将被重试的响应，
-                // 成功响应走的是透传路径，故这里不会记录到用户数据。
-                discard: (res) => {
-                    if (!config.verbose) return drainResponse(res);
-                    return new Promise(resolve => {
-                        const chunks = [];
-                        res.on('data', c => chunks.push(c));
-                        res.once('end', () => {
-                            let buf = Buffer.concat(chunks);
-                            try {
-                                const enc = (res.headers['content-encoding'] || '').toLowerCase();
-                                if (enc === 'gzip' || enc === 'x-gzip') buf = zlib.gunzipSync(buf);
-                                else if (enc === 'br') buf = zlib.brotliDecompressSync(buf);
-                                else if (enc === 'deflate') buf = zlib.inflateSync(buf);
-                            } catch (_) { /* 解压失败就按原样打印 */ }
-                            const body = buf.toString('utf8').slice(0, 500).replace(/\s+/g, ' ');
-                            log.debug(`上游 ${res.statusCode} 响应体: ${body}`);
-                            resolve();
-                        });
-                        res.once('error', () => resolve());
-                    });
-                },
+                discard: discardAndDiagnose,
                 onRetry: ({ attempt, delay, maxRetries, statusCode, error }) => {
                     const cause = statusCode != null ? `状态 ${statusCode}` : `网络错误 ${error ? error.message : ''}`;
-                    log.warn(`${cReq.method} ${cReq.url} 命中 ${cause}，第 ${attempt}/${maxRetries} 次重试（${delay}ms 后）`);
+                    log.warn(`${label} 命中 ${cause}，第 ${attempt}/${maxRetries} 次重试（${delay}ms 后）`);
                 },
             });
         } catch (err) {
-            log.err(`上游请求最终失败: ${err.message}`);
+            log.err(`${label} 上游请求最终失败：${err.message}（${attemptNo} 次尝试，耗时 ${Date.now() - startedAt}ms）`);
             if (!cRes.headersSent) {
                 cRes.writeHead(502, { 'content-type': 'application/json' });
                 cRes.end(JSON.stringify({ error: 'bad_gateway', message: err.message }));
@@ -100,16 +133,17 @@ function createServer(config, deps = {}) {
             return;
         }
 
+        const elapsed = Date.now() - startedAt;
         const { result: uRes, attempts } = outcome;
         if (attempts > 1) {
             // 最终状态码仍命中可重试集合 → 重试已耗尽、并非成功，只是把最后一次响应透传给客户端。
             if (config.retryStatuses.includes(uRes.statusCode)) {
-                log.err(`${cReq.method} ${cReq.url} → ${uRes.statusCode}（重试 ${attempts - 1} 次后仍失败，已透传最终响应）`);
+                log.err(`${label} → ${uRes.statusCode}（重试 ${attempts - 1} 次后仍失败，耗时 ${elapsed}ms，已透传最终响应）`);
             } else {
-                log.info(`${cReq.method} ${cReq.url} → ${uRes.statusCode}（第 ${attempts} 次尝试成功）`);
+                log.info(`${label} → ${uRes.statusCode}（第 ${attempts} 次尝试成功，耗时 ${elapsed}ms）`);
             }
         } else {
-            log.debug(`${cReq.method} ${cReq.url} → ${uRes.statusCode}`);
+            log.debug(`${label} → ${uRes.statusCode}（${elapsed}ms）`);
         }
 
         // 透传响应（含 SSE 流式）。
