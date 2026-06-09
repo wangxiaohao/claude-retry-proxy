@@ -185,6 +185,54 @@ test('上游连接失败：重试耗尽后返回 502', async () => {
     await closeAll(proxy);
 });
 
+test('上游迟迟不返回响应头：连接超时中断该次尝试 → 重试耗尽后 502', async () => {
+    let hits = 0;
+    const held = [];
+    const upstream = http.createServer((req, res) => {
+        hits++;
+        held.push(res); // 故意不写响应头，挂起，模拟卡死的隧道连接
+    });
+    const upstreamPort = await listen(upstream);
+
+    // 连接超时 120ms；noSleep 让重试立即发生。
+    const cfg = configFor(upstreamPort, { RETRY_MAX: '1', RETRY_CONNECT_TIMEOUT_MS: '120' });
+    const proxy = createServer(cfg, { log: silentLog, sleep: noSleep });
+    const proxyPort = await listen(proxy);
+
+    const resp = await request(proxyPort, { body: '{}' });
+    assert.strictEqual(resp.statusCode, 502);
+    assert.match(resp.body, /timeout/i);
+    assert.strictEqual(hits, 2); // 1 首发 + 1 重试，均因连接超时被中断
+
+    held.forEach(res => res.destroy());
+    await closeAll(upstream, proxy);
+});
+
+test('连接超时不影响已开始的 SSE 流（响应头到达后即解除计时）', async () => {
+    const upstream = http.createServer((req, res) => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('event: a\ndata: 1\n\n');
+        // 在超过 connectTimeoutMs 之后才发后续块：若计时未解除，流会被中断、丢块。
+        setTimeout(() => {
+            res.write('event: b\ndata: 2\n\n');
+            res.end('event: done\ndata: {}\n\n');
+        }, 150);
+    });
+    const upstreamPort = await listen(upstream);
+
+    const cfg = configFor(upstreamPort, { RETRY_CONNECT_TIMEOUT_MS: '80' });
+    const proxy = createServer(cfg, { log: silentLog, sleep: noSleep });
+    const proxyPort = await listen(proxy);
+
+    const resp = await request(proxyPort, { body: '{"stream":true}' });
+    assert.strictEqual(resp.statusCode, 200);
+    assert.match(resp.body, /event: a/);
+    assert.match(resp.body, /event: b/);   // 慢块仍完整透传
+    assert.match(resp.body, /event: done/);
+
+    await closeAll(upstream, proxy);
+});
+
 test('GET 无 body 请求也能正常代理', async () => {
     const upstream = http.createServer((req, res) => {
         res.writeHead(200, { 'content-type': 'application/json' });

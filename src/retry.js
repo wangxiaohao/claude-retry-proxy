@@ -21,6 +21,7 @@ function computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, statusDelays, 
 // doAttempt(attempt): Promise<result>  —— 发起一次尝试，result 需含 .statusCode。
 // 选项:
 //   maxRetries          最大重试次数（不含首次）。
+//   totalTimeoutMs      从首次尝试起的总时限(ms)；超时后停止重试。0 表示不限。
 //   retryStatuses       命中则重试的状态码数组。
 //   retryNetworkErrors  doAttempt 抛错时是否重试。
 //   baseDelayMs/maxDelayMs/jitter  退避参数。
@@ -28,12 +29,14 @@ function computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, statusDelays, 
 //   sleep(ms)           延时函数（测试可注入）。
 //   discard(result)     重试前丢弃上一次响应体（可选，返回 Promise）。
 //   onRetry(info)       每次重试前回调：{ attempt, delay, maxRetries, statusCode, error }。
+//   now()               返回当前时间戳(ms)，测试可注入。
 //
 // 返回 { result, attempts }；首次即成功则 attempts=1。
 // 若全部尝试都抛错，则抛出最后一次错误。
 async function requestWithRetry(doAttempt, opts) {
     const {
         maxRetries = 10,
+        totalTimeoutMs = 0,    // 0 = 不限；> 0 时超时即停止重试
         retryStatuses = [403],
         retryNetworkErrors = true,
         baseDelayMs = 600,
@@ -44,52 +47,55 @@ async function requestWithRetry(doAttempt, opts) {
         sleep = defaultSleep,
         discard,
         onRetry,
+        now = () => Date.now(),
     } = opts || {};
 
+    const startedAt = now();
+    // 已超总时限：到点就停止重试（不影响已在途的当次尝试）。
+    const deadlinePassed = () => totalTimeoutMs > 0 && now() - startedAt >= totalTimeoutMs;
+
     let lastError = null;
-    let lastStatus;
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        if (attempt > 0) {
-            const delay = computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, statusDelays, statusCode: lastStatus, random });
-            if (onRetry) {
-                onRetry({
-                    attempt,
-                    delay,
-                    maxRetries,
-                    statusCode: lastStatus,
-                    error: lastError,
-                });
-            }
-            await sleep(delay);
-        }
-
+    for (let attempt = 0; ; attempt++) {
         let result;
+        let failed = false;
         try {
             result = await doAttempt(attempt);
+            lastError = null;
         } catch (err) {
+            failed = true;
             lastError = err;
-            lastStatus = undefined;
-            if (retryNetworkErrors && attempt < maxRetries) {
-                continue;
+        }
+
+        // 本次尝试是否还可重试：受 maxRetries 与总时限共同约束。
+        // 超时判定放在本次尝试之后，使最终透传/抛出的是"最新"一次结果。
+        if (failed) {
+            if (!retryNetworkErrors || attempt >= maxRetries || deadlinePassed()) {
+                throw lastError;
             }
-            throw err;
+        } else {
+            const status = result ? result.statusCode : undefined;
+            const wantRetry = retryStatuses.includes(status);
+            if (!wantRetry || attempt >= maxRetries || deadlinePassed()) {
+                return { result, attempts: attempt + 1 };
+            }
+            // 确定要重试，才丢弃这次响应体（否则 socket 泄漏）。
+            if (discard) {
+                try { await discard(result); } catch (_) { /* 丢弃失败不阻断重试 */ }
+            }
         }
 
-        lastStatus = result ? result.statusCode : undefined;
-        const retriable = retryStatuses.includes(lastStatus) && attempt < maxRetries;
-        if (!retriable) {
-            return { result, attempts: attempt + 1 };
+        // 安排下一次重试：计算退避并等待（剩余时间不足时截断等待）。
+        const statusCode = failed ? undefined : (result ? result.statusCode : undefined);
+        const delay = computeDelay(attempt + 1, { baseDelayMs, maxDelayMs, jitter, statusDelays, statusCode, random });
+        if (onRetry) {
+            onRetry({ attempt: attempt + 1, delay, maxRetries, statusCode, error: lastError });
         }
-
-        if (discard) {
-            try { await discard(result); } catch (_) { /* 丢弃失败不阻断重试 */ }
-        }
+        const actualDelay = totalTimeoutMs > 0
+            ? Math.min(delay, Math.max(0, totalTimeoutMs - (now() - startedAt)))
+            : delay;
+        await sleep(actualDelay);
     }
-
-    // 理论上不可达（循环必定 return 或 throw），兜底抛出。
-    if (lastError) throw lastError;
-    throw new Error('requestWithRetry: 未获得任何结果');
 }
 
 function defaultSleep(ms) {

@@ -252,3 +252,93 @@ test('requestWithRetry: 网络错误不命中固定表，走指数退避', async
     );
     assert.deepStrictEqual(delays, [100, 200]); // 指数，而非 1500
 });
+
+// 用一个可手动推进的假时钟：每次读 now() 返回当前 t；sleep 把 t 前移。
+function fakeClock(start = 0) {
+    let t = start;
+    return {
+        now: () => t,
+        sleep: ms => { t += ms; return Promise.resolve(); },
+        advance: ms => { t += ms; },
+        get t() { return t; },
+    };
+}
+
+test('totalTimeoutMs=0（默认）时不限时，重试至成功', async () => {
+    const seq = [429, 429, 429, 200];
+    let i = 0;
+    const { result, attempts } = await requestWithRetry(
+        () => Promise.resolve({ statusCode: seq[i++] }),
+        { maxRetries: 10, retryStatuses: [429], totalTimeoutMs: 0, jitter: false, baseDelayMs: 100, sleep: noSleep }
+    );
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(attempts, 4);
+});
+
+test('totalTimeoutMs: 超过总时限后停止重试，透传最后一次响应', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    // 持续 429，固定间隔 400，totalTimeoutMs=1000。每次尝试后判定截止：
+    // 尝试1(t=0)429→sleep400 t=400 → 尝试2 429→sleep400 t=800 → 尝试3 429→sleep截到200 t=1000
+    //  → 尝试4 429 此时 t=1000 已到截止 → 停，透传这次 429（而非抛错→502）。
+    const { result, attempts } = await requestWithRetry(
+        () => { calls++; return Promise.resolve({ statusCode: 429 }); },
+        {
+            maxRetries: 10,
+            retryStatuses: [429],
+            totalTimeoutMs: 1000,
+            statusDelays: { 429: 400 },
+            now: clock.now,
+            sleep: clock.sleep,
+        }
+    );
+    assert.strictEqual(result.statusCode, 429);   // 透传最后一次，而非抛错
+    assert.strictEqual(calls, 4);                 // 远没跑满 11 次
+    assert.strictEqual(attempts, 4);
+});
+
+test('totalTimeoutMs: 网络错误下超时则抛出最后一次错误', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    await assert.rejects(
+        () => requestWithRetry(
+            () => { calls++; return Promise.reject(new Error(`neterr-${calls}`)); },
+            {
+                maxRetries: 10,
+                retryStatuses: [429],
+                retryNetworkErrors: true,
+                totalTimeoutMs: 1000,
+                jitter: false,
+                baseDelayMs: 600,
+                now: clock.now,
+                sleep: clock.sleep,
+            }
+        ),
+        /neterr-3/
+    );
+    // 尝试1(t=0)err→sleep600 t=600 → 尝试2 err→sleep截到400 t=1000 → 尝试3 err 此时 t=1000 已到截止
+    //  → 抛出最后一次错误 neterr-3。
+    assert.strictEqual(calls, 3);
+});
+
+test('totalTimeoutMs: sleep 时长被剩余时间截断，不会多等', async () => {
+    const clock = fakeClock();
+    const slept = [];
+    const origSleep = clock.sleep;
+    const seq = [429, 429, 429, 429, 429];
+    let i = 0;
+    await requestWithRetry(
+        () => Promise.resolve({ statusCode: seq[i++] ?? 429 }),
+        {
+            maxRetries: 10,
+            retryStatuses: [429],
+            totalTimeoutMs: 1000,
+            statusDelays: { 429: 700 },   // 单次间隔 700
+            now: clock.now,
+            sleep: ms => { slept.push(ms); return origSleep(ms); },
+        }
+    );
+    // t=0 尝试1 → sleep min(700, 1000)=700, t=700 → 尝试2 → 进第3次前 t=700，
+    // sleep min(700, 1000-700=300)=300, t=1000 → 第3次前 t>=1000 停。
+    assert.deepStrictEqual(slept, [700, 300]);
+});
