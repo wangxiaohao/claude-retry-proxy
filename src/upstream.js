@@ -35,9 +35,11 @@ function createAgent(config) {
 
 // 返回 doAttempt(): Promise<IncomingMessage>，每次调用发起一次完整请求。
 // method/path/headers 取自客户端请求；body 为已缓存的 Buffer。
+// connectTimeoutMs 仅限制连接到收到响应头的阶段，不影响后续 SSE 流式传输。
 function createRequester(config, agent) {
     const isHttps = config.targetProtocol === 'https';
     const transport = isHttps ? https : http;
+    const connectTimeoutMs = config.connectTimeoutMs || 0;
 
     return function doAttempt(method, path, headers, body) {
         return new Promise((resolve, reject) => {
@@ -57,9 +59,25 @@ function createRequester(config, agent) {
                     headers:  outHeaders,
                     agent,
                 },
-                resolve
+                (res) => {
+                    clearTimeout(timer);
+                    resolve(res);
+                }
             );
-            req.once('error', reject);
+
+            // 连接阶段超时：仅覆盖"发出请求→收到响应头"这段时间。
+            // 响应头到达后立即取消，不影响长时间的 SSE 流。
+            let timer;
+            if (connectTimeoutMs > 0) {
+                timer = setTimeout(() => {
+                    req.destroy(new Error(`upstream connect timeout (${connectTimeoutMs}ms)`));
+                }, connectTimeoutMs);
+            }
+
+            req.once('error', (err) => {
+                clearTimeout(timer);
+                reject(err);
+            });
             if (body && body.length) req.write(body);
             req.end();
         });
