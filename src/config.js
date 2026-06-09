@@ -13,6 +13,8 @@ const DEFAULTS = {
     maxRetries:    10,
     baseDelayMs:   600,
     maxDelayMs:    8000,
+    connectTimeoutMs: 60000,    // 单次请求"发出→收到响应头"上限；超时即中断该次尝试（不影响 SSE 流）
+    totalTimeoutMs:   90000,    // 从首次尝试起整轮重试的总时限；超时即停止重试。0=不限
     jitter:        true,
     retryStatuses: [403, 408, 429, 500, 502, 503, 504],
     statusDelays:  { 403: 800 },    // 状态码→固定重试间隔(ms)，命中即不走指数退避
@@ -78,6 +80,8 @@ function buildConfig(argv = [], env = {}) {
         maxRetries:    parseIntOr(flags['max-retries'] ?? env.RETRY_MAX, DEFAULTS.maxRetries),
         baseDelayMs:   parseIntOr(flags['base-delay'] ?? env.RETRY_DELAY_MS, DEFAULTS.baseDelayMs),
         maxDelayMs:    parseIntOr(flags['max-delay'] ?? env.RETRY_MAX_DELAY_MS, DEFAULTS.maxDelayMs),
+        connectTimeoutMs: parseIntOr(flags['connect-timeout'] ?? env.RETRY_CONNECT_TIMEOUT_MS, DEFAULTS.connectTimeoutMs),
+        totalTimeoutMs:   parseIntOr(flags['total-timeout'] ?? env.RETRY_TOTAL_TIMEOUT_MS, DEFAULTS.totalTimeoutMs),
         jitter:        parseBool(flags.jitter ?? env.RETRY_JITTER, DEFAULTS.jitter),
         retryStatuses: parseStatusList(flags['retry-statuses'] ?? env.RETRY_STATUSES, DEFAULTS.retryStatuses),
         statusDelays:  parseStatusDelays(flags['status-delays'] ?? env.RETRY_STATUS_DELAYS, DEFAULTS.statusDelays),

@@ -54,6 +54,7 @@ function createServer(config, deps = {}) {
         try {
             outcome = await requestWithRetry(doAttempt, {
                 maxRetries:         config.maxRetries,
+                totalTimeoutMs:     config.totalTimeoutMs,
                 retryStatuses:      config.retryStatuses,
                 retryNetworkErrors: config.retryNetworkErrors,
                 baseDelayMs:        config.baseDelayMs,
@@ -144,6 +145,8 @@ function start(config, deps = {}) {
         const fixed = Object.entries(config.statusDelays || {});
         const fixedDesc = fixed.length ? `，固定间隔 {${fixed.map(([c, ms]) => `${c}:${ms}ms`).join(', ')}}` : '';
         log.info(`重试: 状态码 [${config.retryStatuses.join(', ')}]，最多 ${config.maxRetries} 次，退避 ${config.baseDelayMs}~${config.maxDelayMs}ms${fixedDesc}`);
+        const totalDesc = config.totalTimeoutMs > 0 ? `${config.totalTimeoutMs}ms` : '不限';
+        log.info(`超时: 单次连接 ${config.connectTimeoutMs}ms，整轮重试 ${totalDesc}`);
         log.info('────────────────────────────────────────────');
         log.info('让 Claude Code 走此代理：');
         log.info(`  临时:  ANTHROPIC_BASE_URL=${url} claude`);

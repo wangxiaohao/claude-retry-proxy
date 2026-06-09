@@ -25,6 +25,8 @@ claude-retry-proxy — 本地反向代理，遇到 403 等可重试状态自动�
   --max-retries <n>           最大重试次数（默认 10）
   --base-delay <ms>           退避基数（默认 600）
   --max-delay <ms>            退避上限（默认 8000）
+  --connect-timeout <ms>      单次请求"发出→收到响应头"上限，超时中断该次尝试（默认 60000，不影响 SSE 流）
+  --total-timeout <ms>        整轮重试总时限，超时即停止重试（默认 90000，0=不限）
   --jitter <bool>             是否抖动（默认 true）
   --retry-statuses <list>     可重试状态码，如 403,429,503（默认 403,408,429,500,502,503,504）
   --status-delays <list>      特定状态码固定重试间隔(ms)，如 403:1500,429:2000（默认 403:1500，命中即不退避）
@@ -34,7 +36,8 @@ claude-retry-proxy — 本地反向代理，遇到 403 等可重试状态自动�
 
 环境变量（与选项等价）:
   RETRY_PROXY_PORT  RETRY_UPSTREAM_PROXY  RETRY_MAX  RETRY_DELAY_MS
-  RETRY_MAX_DELAY_MS  RETRY_STATUSES  RETRY_STATUS_DELAYS  RETRY_JITTER  RETRY_VERBOSE
+  RETRY_MAX_DELAY_MS  RETRY_CONNECT_TIMEOUT_MS  RETRY_TOTAL_TIMEOUT_MS
+  RETRY_STATUSES  RETRY_STATUS_DELAYS  RETRY_JITTER  RETRY_VERBOSE
   HTTPS_PROXY / ALL_PROXY（作为出站代理回退）
 
 示例:
