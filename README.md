@@ -184,8 +184,8 @@ CLI 标志、环境变量、默认值，优先级 **CLI > 环境变量 > 默认�
 | `--jitter` | `RETRY_JITTER` | `true` | 是否加抖动 |
 | `--retry-statuses` | `RETRY_STATUSES` | `403,408,429,500,502,503,504` | 命中即重试的状态码 |
 | `--status-delays` | `RETRY_STATUS_DELAYS` | `403:800` | 特定状态码的固定重试间隔(ms)，如 `403:800,429:2000`；命中即不走退避 |
-| `--attempt-timeout` | `RETRY_ATTEMPT_TIMEOUT_MS` | `30000` | 单次尝试等待响应头(TTFB)的超时(ms)，`0`=不限制；响应头到达后即解除，不影响长流式输出 |
-| `--total-deadline` | `RETRY_TOTAL_DEADLINE_MS` | `60000` | 单个请求含全部重试的总时长上限(ms)，`0`=不限制；到点不再发起新重试，透传最后一次结果 |
+| `--connect-timeout` | `RETRY_CONNECT_TIMEOUT_MS` | `30000` | 单次请求"发出→收到响应头"的超时(ms)，`0`=不限制；响应头到达后即解除，不影响长流式输出 |
+| `--total-timeout` | `RETRY_TOTAL_TIMEOUT_MS` | `60000` | 单个请求含全部重试的总时限(ms)，`0`=不限制；到点不再发起新重试，透传最后一次结果 |
 | `--retry-network-errors` | `RETRY_NETWORK_ERRORS` | `true` | 网络错误是否重试 |
 | `--verbose` | `RETRY_VERBOSE` | `false` | 打印每个请求 |
 
@@ -193,7 +193,7 @@ CLI 标志、环境变量、默认值，优先级 **CLI > 环境变量 > 默认�
 
 例外——固定间隔：在 `--status-delays` 中列出的状态码使用**固定间隔**重试（不指数退避、不抖动、不受 `maxDelay` 封顶）。默认 `403:800`，即 403（多为瞬时权限错误，手动「继续」即恢复）每次重试稳定等 0.8s；429/5xx 及网络错误仍走上面的指数退避。
 
-时长闸门：单次尝试从发起到收到响应头超过 `--attempt-timeout` 即作为网络错误中止（可重试）；整个请求（含全部重试与等待）超过 `--total-deadline` 后不再发起新重试，直接把最后一次结果透传给客户端，避免单个请求拖至一两分钟。
+时长闸门：单次尝试从发起到收到响应头超过 `--connect-timeout` 即作为网络错误中止（可重试）；整个请求（含全部重试与等待）超过 `--total-timeout` 后不再发起新重试，直接把最后一次结果透传给客户端，避免单个请求拖至一两分钟。
 
 ## 测试
 

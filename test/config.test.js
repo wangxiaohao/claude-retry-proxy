@@ -13,6 +13,22 @@ test('默认值：无参数无环境变量', () => {
     assert.strictEqual(cfg.upstreamProxy, '');
     assert.deepStrictEqual(cfg.retryStatuses, DEFAULTS.retryStatuses);
     assert.deepStrictEqual(cfg.statusDelays, { 403: 800 });
+    assert.strictEqual(cfg.connectTimeoutMs, 30000);
+    assert.strictEqual(cfg.totalTimeoutMs, 60000);
+});
+
+test('connect-timeout / total-timeout：flag 与环境变量解析', () => {
+    const a = buildConfig(['--connect-timeout', '30000', '--total-timeout', '45000'], {});
+    assert.strictEqual(a.connectTimeoutMs, 30000);
+    assert.strictEqual(a.totalTimeoutMs, 45000);
+
+    const b = buildConfig([], { RETRY_CONNECT_TIMEOUT_MS: '20000', RETRY_TOTAL_TIMEOUT_MS: '0' });
+    assert.strictEqual(b.connectTimeoutMs, 20000);
+    assert.strictEqual(b.totalTimeoutMs, 0);   // 0 = 不限，须被保留
+
+    // CLI 优先级高于环境变量
+    const c = buildConfig(['--total-timeout', '5000'], { RETRY_TOTAL_TIMEOUT_MS: '9999' });
+    assert.strictEqual(c.totalTimeoutMs, 5000);
 });
 
 test('位置参数：[port] [proxy]（兼容旧脚本用法）', () => {
@@ -93,18 +109,4 @@ test('parseBool 覆盖各种真假表示', () => {
     for (const v of ['1', 'true', 'YES', 'on']) assert.strictEqual(parseBool(v, false), true);
     for (const v of ['0', 'false', 'NO', 'off']) assert.strictEqual(parseBool(v, true), false);
     assert.strictEqual(parseBool('garbage', true), true); // 回退
-});
-
-test('attempt-timeout / total-deadline：默认值与 CLI/环境变量解析', () => {
-    const d = buildConfig([], {});
-    assert.strictEqual(d.attemptTimeoutMs, 30000);
-    assert.strictEqual(d.totalDeadlineMs, 60000);
-
-    const cli = buildConfig(['--attempt-timeout', '5000', '--total-deadline=20000'], {});
-    assert.strictEqual(cli.attemptTimeoutMs, 5000);
-    assert.strictEqual(cli.totalDeadlineMs, 20000);
-
-    const env = buildConfig([], { RETRY_ATTEMPT_TIMEOUT_MS: '0', RETRY_TOTAL_DEADLINE_MS: '0' });
-    assert.strictEqual(env.attemptTimeoutMs, 0);   // 0 = 不限制
-    assert.strictEqual(env.totalDeadlineMs, 0);
 });

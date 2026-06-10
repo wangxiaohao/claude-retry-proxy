@@ -35,12 +35,11 @@ function createAgent(config) {
 
 // 返回 doAttempt(): Promise<IncomingMessage>，每次调用发起一次完整请求。
 // method/path/headers 取自客户端请求；body 为已缓存的 Buffer。
-// config.attemptTimeoutMs > 0 时，限定「发起请求 → 收到响应头」整个阶段（含 DNS/连接/
-// 代理 CONNECT 隧道/TLS/TTFB）；响应头到达即解除，不影响后续长流式输出。
+// connectTimeoutMs 仅限制连接到收到响应头的阶段，不影响后续 SSE 流式传输。
 function createRequester(config, agent) {
     const isHttps = config.targetProtocol === 'https';
     const transport = isHttps ? https : http;
-    const timeoutMs = config.attemptTimeoutMs > 0 ? config.attemptTimeoutMs : 0;
+    const connectTimeoutMs = config.connectTimeoutMs || 0;
 
     return function doAttempt(method, path, headers, body) {
         return new Promise((resolve, reject) => {
@@ -51,7 +50,6 @@ function createRequester(config, agent) {
                 delete outHeaders['content-length'];
             }
 
-            let timer = null;
             const req = transport.request(
                 {
                     hostname: config.targetHost,
@@ -61,20 +59,23 @@ function createRequester(config, agent) {
                     headers:  outHeaders,
                     agent,
                 },
-                res => {
-                    if (timer) clearTimeout(timer);
+                (res) => {
+                    clearTimeout(timer);
                     resolve(res);
                 }
             );
-            if (timeoutMs) {
-                // 用独立计时器而非 req.setTimeout：后者要等 socket 分配后才生效，
-                // 盖不住隧道代理 CONNECT 阶段卡死的情况。
+
+            // 连接阶段超时：仅覆盖"发出请求→收到响应头"这段时间。
+            // 响应头到达后立即取消，不影响长时间的 SSE 流。
+            let timer;
+            if (connectTimeoutMs > 0) {
                 timer = setTimeout(() => {
-                    req.destroy(new Error(`等待响应头超时（>${timeoutMs}ms）`));
-                }, timeoutMs);
+                    req.destroy(new Error(`upstream connect timeout (${connectTimeoutMs}ms)`));
+                }, connectTimeoutMs);
             }
-            req.once('error', err => {
-                if (timer) clearTimeout(timer);
+
+            req.once('error', (err) => {
+                clearTimeout(timer);
                 reject(err);
             });
             if (body && body.length) req.write(body);
