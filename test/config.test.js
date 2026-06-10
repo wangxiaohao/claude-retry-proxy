@@ -13,8 +13,21 @@ test('默认值：无参数无环境变量', () => {
     assert.strictEqual(cfg.upstreamProxy, '');
     assert.deepStrictEqual(cfg.retryStatuses, DEFAULTS.retryStatuses);
     assert.deepStrictEqual(cfg.statusDelays, { 403: 800 });
+    assert.strictEqual(cfg.establishTimeoutMs, 10000);
     assert.strictEqual(cfg.connectTimeoutMs, 30000);
     assert.strictEqual(cfg.totalTimeoutMs, 60000);
+});
+
+test('establish-timeout：flag 与环境变量解析，0=不限', () => {
+    const a = buildConfig(['--establish-timeout', '5000'], {});
+    assert.strictEqual(a.establishTimeoutMs, 5000);
+
+    const b = buildConfig([], { RETRY_ESTABLISH_TIMEOUT_MS: '0' });
+    assert.strictEqual(b.establishTimeoutMs, 0);
+
+    // CLI 优先级高于环境变量
+    const c = buildConfig(['--establish-timeout', '3000'], { RETRY_ESTABLISH_TIMEOUT_MS: '9999' });
+    assert.strictEqual(c.establishTimeoutMs, 3000);
 });
 
 test('connect-timeout / total-timeout：flag 与环境变量解析', () => {

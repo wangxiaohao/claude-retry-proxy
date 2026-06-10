@@ -25,7 +25,9 @@ function sanitizeHeaders(headers, targetHost) {
 function createAgent(config) {
     const isHttps = config.targetProtocol === 'https';
     if (config.upstreamProxy && isHttps) {
-        return new TunnelAgent(config.upstreamProxy);
+        return new TunnelAgent(config.upstreamProxy, {
+            establishTimeoutMs: config.establishTimeoutMs || 0,
+        });
     }
     if (isHttps) {
         return new https.Agent({ keepAlive: false });

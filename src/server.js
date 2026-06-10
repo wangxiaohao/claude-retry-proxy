@@ -180,7 +180,8 @@ function start(config, deps = {}) {
         const fixedDesc = fixed.length ? `，固定间隔 {${fixed.map(([c, ms]) => `${c}:${ms}ms`).join(', ')}}` : '';
         log.info(`重试: 状态码 [${config.retryStatuses.join(', ')}]，最多 ${config.maxRetries} 次，退避 ${config.baseDelayMs}~${config.maxDelayMs}ms${fixedDesc}`);
         const totalDesc = config.totalTimeoutMs > 0 ? `${config.totalTimeoutMs}ms` : '不限';
-        log.info(`超时: 单次连接 ${config.connectTimeoutMs}ms，整轮重试 ${totalDesc}`);
+        const establishDesc = config.establishTimeoutMs > 0 ? `${config.establishTimeoutMs}ms` : '不限';
+        log.info(`超时: 建连 ${establishDesc}，单次连接 ${config.connectTimeoutMs}ms，整轮重试 ${totalDesc}`);
         log.info('────────────────────────────────────────────');
         log.info('让 Claude Code 走此代理：');
         log.info(`  临时:  ANTHROPIC_BASE_URL=${url} claude`);
