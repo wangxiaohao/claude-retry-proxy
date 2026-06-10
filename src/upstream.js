@@ -35,9 +35,12 @@ function createAgent(config) {
 
 // 返回 doAttempt(): Promise<IncomingMessage>，每次调用发起一次完整请求。
 // method/path/headers 取自客户端请求；body 为已缓存的 Buffer。
+// config.attemptTimeoutMs > 0 时，限定「发起请求 → 收到响应头」整个阶段（含 DNS/连接/
+// 代理 CONNECT 隧道/TLS/TTFB）；响应头到达即解除，不影响后续长流式输出。
 function createRequester(config, agent) {
     const isHttps = config.targetProtocol === 'https';
     const transport = isHttps ? https : http;
+    const timeoutMs = config.attemptTimeoutMs > 0 ? config.attemptTimeoutMs : 0;
 
     return function doAttempt(method, path, headers, body) {
         return new Promise((resolve, reject) => {
@@ -48,6 +51,7 @@ function createRequester(config, agent) {
                 delete outHeaders['content-length'];
             }
 
+            let timer = null;
             const req = transport.request(
                 {
                     hostname: config.targetHost,
@@ -57,9 +61,22 @@ function createRequester(config, agent) {
                     headers:  outHeaders,
                     agent,
                 },
-                resolve
+                res => {
+                    if (timer) clearTimeout(timer);
+                    resolve(res);
+                }
             );
-            req.once('error', reject);
+            if (timeoutMs) {
+                // 用独立计时器而非 req.setTimeout：后者要等 socket 分配后才生效，
+                // 盖不住隧道代理 CONNECT 阶段卡死的情况。
+                timer = setTimeout(() => {
+                    req.destroy(new Error(`等待响应头超时（>${timeoutMs}ms）`));
+                }, timeoutMs);
+            }
+            req.once('error', err => {
+                if (timer) clearTimeout(timer);
+                reject(err);
+            });
             if (body && body.length) req.write(body);
             req.end();
         });

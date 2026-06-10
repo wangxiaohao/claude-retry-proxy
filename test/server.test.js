@@ -202,3 +202,79 @@ test('GET 无 body 请求也能正常代理', async () => {
 
     await closeAll(upstream, proxy);
 });
+
+test('单次超时：上游迟迟不回响应头 → 按网络错误重试，耗尽后 502', async () => {
+    // 上游收到请求后不回任何字节（悬挂），靠 attempt-timeout 触发失败。
+    let hits = 0;
+    const hung = [];
+    const upstream = http.createServer((req, res) => {
+        hits++;
+        hung.push(res); // 留住引用，结束后统一销毁
+    });
+    const upstreamPort = await listen(upstream);
+
+    const cfg = configFor(upstreamPort, {
+        RETRY_ATTEMPT_TIMEOUT_MS: '80',
+        RETRY_MAX: '1',
+    });
+    const proxy = createServer(cfg, { log: silentLog, sleep: noSleep });
+    const proxyPort = await listen(proxy);
+
+    const t0 = Date.now();
+    const resp = await request(proxyPort, { body: '{}' });
+    assert.strictEqual(resp.statusCode, 502);
+    assert.match(resp.body, /等待响应头超时/);
+    assert.strictEqual(hits, 2);                 // 首发 + 1 次重试，都被超时掐断
+    assert.ok(Date.now() - t0 < 2000, '应远快于无超时的挂死等待');
+
+    hung.forEach(r => r.destroy());
+    await closeAll(upstream, proxy);
+});
+
+test('单次超时不影响慢速流式响应：响应头到达后即解除', async () => {
+    // 上游先快速回响应头，再缓慢分段输出 body（总时长远超 attempt-timeout）。
+    const upstream = http.createServer((req, res) => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: 1\n\n');
+        setTimeout(() => res.write('data: 2\n\n'), 120);
+        setTimeout(() => res.end('data: end\n\n'), 240);
+    });
+    const upstreamPort = await listen(upstream);
+
+    const cfg = configFor(upstreamPort, { RETRY_ATTEMPT_TIMEOUT_MS: '80' });
+    const proxy = createServer(cfg, { log: silentLog, sleep: noSleep });
+    const proxyPort = await listen(proxy);
+
+    const resp = await request(proxyPort, { body: '{"stream":true}' });
+    assert.strictEqual(resp.statusCode, 200);
+    assert.match(resp.body, /data: end/); // 完整收到，未被 80ms 超时掐断
+
+    await closeAll(upstream, proxy);
+});
+
+test('总时长上限：到点停止重试，把最后一次 403 透传（不等满 maxRetries）', async () => {
+    let hits = 0;
+    const upstream = http.createServer((req, res) => {
+        hits++;
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end('{"error":"forbidden"}');
+    });
+    const upstreamPort = await listen(upstream);
+
+    // 403 固定间隔 60ms，总上限 150ms：约 2~3 次尝试后必须停（远小于 maxRetries=50）。
+    const cfg = configFor(upstreamPort, {
+        RETRY_MAX: '50',
+        RETRY_STATUS_DELAYS: '403:60',
+        RETRY_TOTAL_DEADLINE_MS: '150',
+    });
+    const proxy = createServer(cfg, { log: silentLog }); // 用真实 sleep，验证真实时间闸门
+    const proxyPort = await listen(proxy);
+
+    const t0 = Date.now();
+    const resp = await request(proxyPort, { body: '{}' });
+    assert.strictEqual(resp.statusCode, 403);
+    assert.ok(hits < 10, `应远少于 51 次（实际 ${hits} 次）`);
+    assert.ok(Date.now() - t0 < 1500, '总耗时应被压在上限附近');
+
+    await closeAll(upstream, proxy);
+});

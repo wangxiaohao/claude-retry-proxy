@@ -16,6 +16,8 @@ const DEFAULTS = {
     jitter:        true,
     retryStatuses: [403, 408, 429, 500, 502, 503, 504],
     statusDelays:  { 403: 800 },    // 状态码→固定重试间隔(ms)，命中即不走指数退避
+    attemptTimeoutMs: 30000,        // 单次尝试等待响应头(TTFB)的超时(ms)，0=不限制
+    totalDeadlineMs:  60000,        // 单个请求含全部重试的总时长上限(ms)，0=不限制
     retryNetworkErrors: true,
     verbose:       false,
 };
@@ -81,6 +83,8 @@ function buildConfig(argv = [], env = {}) {
         jitter:        parseBool(flags.jitter ?? env.RETRY_JITTER, DEFAULTS.jitter),
         retryStatuses: parseStatusList(flags['retry-statuses'] ?? env.RETRY_STATUSES, DEFAULTS.retryStatuses),
         statusDelays:  parseStatusDelays(flags['status-delays'] ?? env.RETRY_STATUS_DELAYS, DEFAULTS.statusDelays),
+        attemptTimeoutMs: parseIntOr(flags['attempt-timeout'] ?? env.RETRY_ATTEMPT_TIMEOUT_MS, DEFAULTS.attemptTimeoutMs),
+        totalDeadlineMs:  parseIntOr(flags['total-deadline'] ?? env.RETRY_TOTAL_DEADLINE_MS, DEFAULTS.totalDeadlineMs),
         retryNetworkErrors: parseBool(flags['retry-network-errors'] ?? env.RETRY_NETWORK_ERRORS, DEFAULTS.retryNetworkErrors),
         verbose:       parseBool(flags.verbose ?? env.RETRY_VERBOSE, DEFAULTS.verbose),
         help:          Boolean(flags.help || flags.h),

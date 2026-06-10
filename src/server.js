@@ -115,6 +115,7 @@ function createServer(config, deps = {}) {
                 maxDelayMs:         config.maxDelayMs,
                 jitter:             config.jitter,
                 statusDelays:       config.statusDelays,
+                totalDeadlineMs:    config.totalDeadlineMs,
                 sleep,
                 discard: discardAndDiagnose,
                 onRetry: ({ attempt, delay, maxRetries, statusCode, error }) => {
@@ -123,7 +124,8 @@ function createServer(config, deps = {}) {
                 },
             });
         } catch (err) {
-            log.err(`${label} 上游请求最终失败：${err.message}（${attemptNo} 次尝试，耗时 ${Date.now() - startedAt}ms）`);
+            const why = err.retryDeadlineExceeded ? `，已达总时长上限 ${config.totalDeadlineMs}ms` : '';
+            log.err(`${label} 上游请求最终失败：${err.message}（${attemptNo} 次尝试${why}，耗时 ${Date.now() - startedAt}ms）`);
             if (!cRes.headersSent) {
                 cRes.writeHead(502, { 'content-type': 'application/json' });
                 cRes.end(JSON.stringify({ error: 'bad_gateway', message: err.message }));
@@ -134,11 +136,12 @@ function createServer(config, deps = {}) {
         }
 
         const elapsed = Date.now() - startedAt;
-        const { result: uRes, attempts } = outcome;
-        if (attempts > 1) {
-            // 最终状态码仍命中可重试集合 → 重试已耗尽、并非成功，只是把最后一次响应透传给客户端。
+        const { result: uRes, attempts, deadlineExceeded } = outcome;
+        if (attempts > 1 || deadlineExceeded) {
+            // 最终状态码仍命中可重试集合 → 重试已放弃（次数耗尽或到达总时长上限），把最后一次响应透传给客户端。
             if (config.retryStatuses.includes(uRes.statusCode)) {
-                log.err(`${label} → ${uRes.statusCode}（重试 ${attempts - 1} 次后仍失败，耗时 ${elapsed}ms，已透传最终响应）`);
+                const why = deadlineExceeded ? `已达总时长上限 ${config.totalDeadlineMs}ms` : `重试 ${attempts - 1} 次后仍失败`;
+                log.err(`${label} → ${uRes.statusCode}（${why}，耗时 ${elapsed}ms，已透传最终响应）`);
             } else {
                 log.info(`${label} → ${uRes.statusCode}（第 ${attempts} 次尝试成功，耗时 ${elapsed}ms）`);
             }
@@ -178,6 +181,8 @@ function start(config, deps = {}) {
         const fixed = Object.entries(config.statusDelays || {});
         const fixedDesc = fixed.length ? `，固定间隔 {${fixed.map(([c, ms]) => `${c}:${ms}ms`).join(', ')}}` : '';
         log.info(`重试: 状态码 [${config.retryStatuses.join(', ')}]，最多 ${config.maxRetries} 次，退避 ${config.baseDelayMs}~${config.maxDelayMs}ms${fixedDesc}`);
+        const fmt = ms => (ms > 0 ? `${ms}ms` : '不限');
+        log.info(`超时: 单次等响应头 ${fmt(config.attemptTimeoutMs)}，含重试总上限 ${fmt(config.totalDeadlineMs)}`);
         log.info('────────────────────────────────────────────');
         log.info('让 Claude Code 走此代理：');
         log.info(`  临时:  ANTHROPIC_BASE_URL=${url} claude`);

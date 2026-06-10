@@ -252,3 +252,125 @@ test('requestWithRetry: 网络错误不命中固定表，走指数退避', async
     );
     assert.deepStrictEqual(delays, [100, 200]); // 指数，而非 1500
 });
+
+// —— 总时长上限 totalDeadlineMs ——
+// 用假时钟：sleep 推进时间，便于确定性验证 deadline 截断。
+function fakeClock() {
+    let t = 0;
+    return {
+        now: () => t,
+        sleep: ms => { t += ms; return Promise.resolve(); },
+        advance: ms => { t += ms; },
+    };
+}
+
+test('totalDeadlineMs: 到达上限后停止重试，返回最后一次响应并标记 deadlineExceeded', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const { result, attempts, deadlineExceeded } = await requestWithRetry(
+        () => { calls++; return Promise.resolve({ statusCode: 403 }); },
+        {
+            maxRetries: 10,
+            retryStatuses: [403],
+            statusDelays: { 403: 800 },
+            totalDeadlineMs: 2000,
+            now: clock.now,
+            sleep: clock.sleep,
+        }
+    );
+    // t=0 首发 403 → 0+800<2000 重试；t=800 403 → 1600<2000 重试；t=1600 403 → 2400>=2000 停。
+    assert.strictEqual(result.statusCode, 403);
+    assert.strictEqual(attempts, 3);
+    assert.strictEqual(calls, 3);
+    assert.strictEqual(deadlineExceeded, true);
+});
+
+test('totalDeadlineMs=0 不限制：行为与旧逻辑一致，重试至次数耗尽', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const { attempts, deadlineExceeded } = await requestWithRetry(
+        () => { calls++; return Promise.resolve({ statusCode: 403 }); },
+        {
+            maxRetries: 3,
+            retryStatuses: [403],
+            statusDelays: { 403: 800 },
+            totalDeadlineMs: 0,
+            now: clock.now,
+            sleep: clock.sleep,
+        }
+    );
+    assert.strictEqual(attempts, 4);
+    assert.strictEqual(calls, 4);
+    assert.strictEqual(deadlineExceeded, false);
+});
+
+test('totalDeadlineMs: 计入尝试本身的耗时（慢尝试更早触顶）', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const { attempts, deadlineExceeded } = await requestWithRetry(
+        () => {
+            calls++;
+            clock.advance(900);     // 每次尝试本身耗 900ms
+            return Promise.resolve({ statusCode: 403 });
+        },
+        {
+            maxRetries: 10,
+            retryStatuses: [403],
+            statusDelays: { 403: 800 },
+            totalDeadlineMs: 2000,
+            now: clock.now,
+            sleep: clock.sleep,
+        }
+    );
+    // t=900 首发完 → 900+800<2000 重试；t=1700 睡完，t=2600 第 2 次完 → 2600+800>=2000 停。
+    assert.strictEqual(attempts, 2);
+    assert.strictEqual(calls, 2);
+    assert.strictEqual(deadlineExceeded, true);
+});
+
+test('totalDeadlineMs: 网络错误路径同样受限，错误带 retryDeadlineExceeded 标记', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    await assert.rejects(
+        () => requestWithRetry(
+            () => { calls++; return Promise.reject(new Error('socket hang up')); },
+            {
+                maxRetries: 10,
+                retryStatuses: [403],
+                retryNetworkErrors: true,
+                jitter: false,
+                baseDelayMs: 600,
+                maxDelayMs: 8000,
+                totalDeadlineMs: 2000,
+                now: clock.now,
+                sleep: clock.sleep,
+            }
+        ),
+        err => {
+            assert.match(err.message, /socket hang up/);
+            assert.strictEqual(err.retryDeadlineExceeded, true);
+            return true;
+        }
+    );
+    // 退避 600,1200,2400…：t=0 失败→睡600；t=600 失败→睡1200；t=1800 失败→1800+2400>=2000 停。
+    assert.strictEqual(calls, 3);
+});
+
+test('totalDeadlineMs: 未触顶时 deadlineExceeded=false（成功路径）', async () => {
+    const clock = fakeClock();
+    const seq = [403, 200];
+    let i = 0;
+    const { result, deadlineExceeded } = await requestWithRetry(
+        () => Promise.resolve({ statusCode: seq[i++] }),
+        {
+            maxRetries: 10,
+            retryStatuses: [403],
+            statusDelays: { 403: 800 },
+            totalDeadlineMs: 60000,
+            now: clock.now,
+            sleep: clock.sleep,
+        }
+    );
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(deadlineExceeded, false);
+});

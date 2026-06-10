@@ -25,12 +25,15 @@ function computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, statusDelays, 
 //   retryNetworkErrors  doAttempt 抛错时是否重试。
 //   baseDelayMs/maxDelayMs/jitter  退避参数。
 //   statusDelays        状态码→固定间隔(ms)；命中的状态码用固定值，不走退避（如 {403:1500}）。
+//   totalDeadlineMs     含全部重试的总时长上限(ms)；0/缺省表示不限制。
+//   now()               时钟函数（测试可注入），默认 Date.now。
 //   sleep(ms)           延时函数（测试可注入）。
 //   discard(result)     重试前丢弃上一次响应体（可选，返回 Promise）。
 //   onRetry(info)       每次重试前回调：{ attempt, delay, maxRetries, statusCode, error }。
 //
-// 返回 { result, attempts }；首次即成功则 attempts=1。
-// 若全部尝试都抛错，则抛出最后一次错误。
+// 返回 { result, attempts, deadlineExceeded }；首次即成功则 attempts=1；
+// deadlineExceeded=true 表示因总时长上限提前放弃（而非次数耗尽）。
+// 若全部尝试都抛错，则抛出最后一次错误；因 deadline 放弃时错误上带 retryDeadlineExceeded=true。
 async function requestWithRetry(doAttempt, opts) {
     const {
         maxRetries = 10,
@@ -40,28 +43,34 @@ async function requestWithRetry(doAttempt, opts) {
         maxDelayMs = 8000,
         jitter = true,
         statusDelays = {},     // 状态码→固定间隔(ms)；空则全部走指数退避（纯函数默认中立）
+        totalDeadlineMs = 0,   // 0 = 不限制（纯函数默认中立）
+        now = Date.now,
         random,
         sleep = defaultSleep,
         discard,
         onRetry,
     } = opts || {};
 
+    const startedAt = now();
+    // 决定是否还允许下一次重试：把即将等待的 delay 一并计入——睡过 deadline 再发起尝试没有意义。
+    const withinDeadline = delay => totalDeadlineMs <= 0 || (now() - startedAt + delay) < totalDeadlineMs;
+
     let lastError = null;
     let lastStatus;
+    let nextDelay = 0;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (attempt > 0) {
-            const delay = computeDelay(attempt, { baseDelayMs, maxDelayMs, jitter, statusDelays, statusCode: lastStatus, random });
             if (onRetry) {
                 onRetry({
                     attempt,
-                    delay,
+                    delay: nextDelay,
                     maxRetries,
                     statusCode: lastStatus,
                     error: lastError,
                 });
             }
-            await sleep(delay);
+            await sleep(nextDelay);
         }
 
         let result;
@@ -70,16 +79,20 @@ async function requestWithRetry(doAttempt, opts) {
         } catch (err) {
             lastError = err;
             lastStatus = undefined;
+            nextDelay = computeDelay(attempt + 1, { baseDelayMs, maxDelayMs, jitter, statusDelays, statusCode: lastStatus, random });
             if (retryNetworkErrors && attempt < maxRetries) {
-                continue;
+                if (withinDeadline(nextDelay)) continue;
+                err.retryDeadlineExceeded = true;
             }
             throw err;
         }
 
         lastStatus = result ? result.statusCode : undefined;
-        const retriable = retryStatuses.includes(lastStatus) && attempt < maxRetries;
-        if (!retriable) {
-            return { result, attempts: attempt + 1 };
+        nextDelay = computeDelay(attempt + 1, { baseDelayMs, maxDelayMs, jitter, statusDelays, statusCode: lastStatus, random });
+        const wantRetry = retryStatuses.includes(lastStatus) && attempt < maxRetries;
+        const within = wantRetry ? withinDeadline(nextDelay) : true;
+        if (!wantRetry || !within) {
+            return { result, attempts: attempt + 1, deadlineExceeded: wantRetry && !within };
         }
 
         if (discard) {

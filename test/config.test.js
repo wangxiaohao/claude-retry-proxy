@@ -94,3 +94,17 @@ test('parseBool 覆盖各种真假表示', () => {
     for (const v of ['0', 'false', 'NO', 'off']) assert.strictEqual(parseBool(v, true), false);
     assert.strictEqual(parseBool('garbage', true), true); // 回退
 });
+
+test('attempt-timeout / total-deadline：默认值与 CLI/环境变量解析', () => {
+    const d = buildConfig([], {});
+    assert.strictEqual(d.attemptTimeoutMs, 30000);
+    assert.strictEqual(d.totalDeadlineMs, 60000);
+
+    const cli = buildConfig(['--attempt-timeout', '5000', '--total-deadline=20000'], {});
+    assert.strictEqual(cli.attemptTimeoutMs, 5000);
+    assert.strictEqual(cli.totalDeadlineMs, 20000);
+
+    const env = buildConfig([], { RETRY_ATTEMPT_TIMEOUT_MS: '0', RETRY_TOTAL_DEADLINE_MS: '0' });
+    assert.strictEqual(env.attemptTimeoutMs, 0);   // 0 = 不限制
+    assert.strictEqual(env.totalDeadlineMs, 0);
+});
