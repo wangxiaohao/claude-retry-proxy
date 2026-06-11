@@ -14,8 +14,9 @@ test('默认值：无参数无环境变量', () => {
     assert.deepStrictEqual(cfg.retryStatuses, DEFAULTS.retryStatuses);
     assert.deepStrictEqual(cfg.statusDelays, { 403: 800 });
     assert.strictEqual(cfg.establishTimeoutMs, 10000);
-    assert.strictEqual(cfg.connectTimeoutMs, 30000);
-    assert.strictEqual(cfg.totalTimeoutMs, 60000);
+    // 默认不限时：高延迟出站链路上正常请求的响应头可迟至 ~60s，激进默认值会误杀本会成功的请求
+    assert.strictEqual(cfg.connectTimeoutMs, 0);
+    assert.strictEqual(cfg.totalTimeoutMs, 0);
 });
 
 test('establish-timeout：flag 与环境变量解析，0=不限', () => {

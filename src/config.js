@@ -14,8 +14,10 @@ const DEFAULTS = {
     baseDelayMs:   600,
     maxDelayMs:    8000,
     establishTimeoutMs: 10000,  // 建连阶段（CONNECT 隧道+TLS 握手）上限，仅经出站代理时生效。0=不限
-    connectTimeoutMs: 30000,    // 单次请求"发出→收到响应头"上限；超时即中断该次尝试（不影响 SSE 流）
-    totalTimeoutMs:   60000,    // 从首次尝试起整轮重试的总时限；超时即停止重试。0=不限
+    // 下面两个超时默认关闭（0=不限）：经出站代理的高延迟链路上，正常会成功的请求
+    // 从发出到收到响应头实测可达 ~60s，30s/60s 这类默认值会把它们误杀成 502/403。
+    connectTimeoutMs: 0,        // 单次请求"发出→收到响应头"上限；超时即中断该次尝试（不影响 SSE 流）
+    totalTimeoutMs:   0,        // 从首次尝试起整轮重试的总时限；超时即停止重试
     jitter:        true,
     retryStatuses: [403, 408, 429, 500, 502, 503, 504],
     statusDelays:  { 403: 800 },    // 状态码→固定重试间隔(ms)，命中即不走指数退避
